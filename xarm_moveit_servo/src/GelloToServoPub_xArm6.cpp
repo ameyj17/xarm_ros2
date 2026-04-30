@@ -3,7 +3,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <control_msgs/msg/joint_jog.hpp>
-#include <std_srvs/srv/trigger.hpp>
+#include <moveit_msgs/srv/servo_command_type.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_msgs/msg/bool.hpp>
 
@@ -33,7 +33,8 @@ public:
     declare_parameter<std::string>("leader_topic", "gello/joint_states");
     declare_parameter<std::string>("follower_states_topic", "/joint_states");
     declare_parameter<std::string>("joint_cmd_topic", "servo_server/delta_joint_cmds");
-    declare_parameter<std::string>("servo_start_srv", "/servo_server/start_servo");
+    // Jazzy: start_servo is gone; use switch_command_type to declare JointJog mode (JOINT_JOG=0)
+    declare_parameter<std::string>("switch_command_type_srv", "/servo_server/switch_command_type");
 
     declare_parameter<double>("rate_hz", 200.0);
     declare_parameter<double>("deadband_rad", 1e-4);
@@ -56,7 +57,7 @@ public:
     leader_topic_          = get_parameter("leader_topic").as_string();
     follower_states_topic_ = get_parameter("follower_states_topic").as_string();
     joint_cmd_topic_       = get_parameter("joint_cmd_topic").as_string();
-    servo_start_srv_       = get_parameter("servo_start_srv").as_string();
+    switch_cmd_type_srv_   = get_parameter("switch_command_type_srv").as_string();
 
     rate_hz_        = get_parameter("rate_hz").as_double();
     deadband_       = get_parameter("deadband_rad").as_double();
@@ -103,11 +104,11 @@ public:
       std::chrono::duration<double>(loop_dt_),
       [this](){ tick(); });
 
-    // Optionally start Servo
-    servo_start_ = create_client<std_srvs::srv::Trigger>(servo_start_srv_);
-    (void)servo_start_->wait_for_service(std::chrono::seconds(1));
-    if (servo_start_->service_is_ready())
-      servo_start_->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+    // Jazzy: tell Servo to expect JointJog commands (JOINT_JOG=0, TWIST=1, POSE=2)
+    // Verify with: ros2 interface show moveit_msgs/srv/ServoCommandType
+    switch_cmd_type_ = create_client<moveit_msgs::srv::ServoCommandType>(switch_cmd_type_srv_);
+    (void)switch_cmd_type_->wait_for_service(std::chrono::seconds(2));
+    call_switch_command_type(moveit_msgs::srv::ServoCommandType::Request::JOINT_JOG);
 
     // Service to pause/resume Gello control (for keyboard override)
     pause_srv_ = create_service<std_srvs::srv::SetBool>(
@@ -149,6 +150,22 @@ private:
   static inline double wrap(double d){ return std::atan2(std::sin(d), std::cos(d)); }
   static inline double clamp(double x,double lo,double hi){ return std::max(lo,std::min(hi,x)); }
 
+  void call_switch_command_type(int8_t type)
+  {
+    if (!switch_cmd_type_ || !switch_cmd_type_->service_is_ready()) {
+      RCLCPP_WARN(get_logger(), "switch_command_type service not ready, skipping");
+      return;
+    }
+    auto req = std::make_shared<moveit_msgs::srv::ServoCommandType::Request>();
+    req->command_type = type;
+    switch_cmd_type_->async_send_request(req,
+      [this, type](rclcpp::Client<moveit_msgs::srv::ServoCommandType>::SharedFuture fut) {
+        auto res = fut.get();
+        if (!res->success)
+          RCLCPP_WARN(get_logger(), "switch_command_type(%d) failed: %s", type, res->message.c_str());
+      });
+  }
+
   // Handle pause/resume service
   void on_set_paused(const std::shared_ptr<std_srvs::srv::SetBool::Request>& req,
                      std::shared_ptr<std_srvs::srv::SetBool::Response>& res)
@@ -180,7 +197,10 @@ private:
     
     // Mark that we need a fresh velocity estimate
     have_leader_last_ = false;
-    
+
+    // Re-declare JointJog mode: keyboard may have switched Servo to TWIST while it had control
+    call_switch_command_type(moveit_msgs::srv::ServoCommandType::Request::JOINT_JOG);
+
     RCLCPP_INFO(get_logger(), "Gello state reset - velocity tracking restarted");
   }
 
@@ -355,7 +375,7 @@ private:
 
   // Params
   std::vector<std::string> follower_joint_names_;
-  std::string leader_topic_, follower_states_topic_, joint_cmd_topic_, servo_start_srv_;
+  std::string leader_topic_, follower_states_topic_, joint_cmd_topic_, switch_cmd_type_srv_;
   double rate_hz_{200.0}, loop_dt_{0.005};
   double deadband_{1e-4}, vel_deadband_{1e-3};
   double kp_{4.0}, kd_{0.0}, k_ff_{1.0};
@@ -374,7 +394,7 @@ private:
   rclcpp::Subscription<JointState>::SharedPtr leader_sub_, follower_sub_;
   rclcpp::Publisher<JointJog>::SharedPtr pub_;
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_;
+  rclcpp::Client<moveit_msgs::srv::ServoCommandType>::SharedPtr switch_cmd_type_;
 
   // Pause control (for keyboard override)
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr pause_srv_;
