@@ -140,8 +140,7 @@ private:
             [this, type](rclcpp::Client<moveit_msgs::srv::ServoCommandType>::SharedFuture fut) {
                 auto res = fut.get();
                 if (!res->success)
-                    RCLCPP_WARN(node_->get_logger(), "switch_command_type(%d) failed: %s",
-                                type, res->message.c_str());
+                    RCLCPP_WARN(node_->get_logger(), "switch_command_type(%d) failed", type);
             });
     }
 
