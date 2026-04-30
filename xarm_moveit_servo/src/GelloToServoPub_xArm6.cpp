@@ -4,6 +4,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <control_msgs/msg/joint_jog.hpp>
 #include <moveit_msgs/srv/servo_command_type.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_msgs/msg/bool.hpp>
 
@@ -162,7 +163,7 @@ private:
       [this, type](rclcpp::Client<moveit_msgs::srv::ServoCommandType>::SharedFuture fut) {
         auto res = fut.get();
         if (!res->success)
-          RCLCPP_WARN(get_logger(), "switch_command_type(%d) failed: %s", type, res->message.c_str());
+          RCLCPP_WARN(get_logger(), "switch_command_type(%d) failed", type);
       });
   }
 
