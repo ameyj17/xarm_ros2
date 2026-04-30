@@ -35,3 +35,4 @@ xarm6_traj_controller:
     interface_name: position
     state_publish_rate: 25.0
     action_monitor_rate: 10.0
+    allow_nonzero_velocity_at_trajectory_end: true
