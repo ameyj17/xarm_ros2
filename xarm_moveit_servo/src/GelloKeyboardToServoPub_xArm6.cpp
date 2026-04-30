@@ -9,6 +9,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <moveit_msgs/srv/servo_command_type.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <std_msgs/msg/bool.hpp>
 
@@ -85,12 +86,10 @@ public:
         twist_pub_ = node_->create_publisher<geometry_msgs::msg::TwistStamped>(
             twist_cmd_topic_, ros_queue_size_);
 
-        // Create a service client to start the ServoServer
-        servo_start_client_ = node_->create_client<std_srvs::srv::Trigger>("/servo_server/start_servo");
-        servo_start_client_->wait_for_service(std::chrono::seconds(1));
-        if (servo_start_client_->service_is_ready()) {
-            servo_start_client_->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
-        }
+        // Jazzy: start_servo is gone; switch_command_type is called on mode change, not startup
+        switch_cmd_type_client_ = node_->create_client<moveit_msgs::srv::ServoCommandType>(
+            "/servo_server/switch_command_type");
+        (void)switch_cmd_type_client_->wait_for_service(std::chrono::seconds(1));
 
         // Create service client to toggle Gello pause
         std::string toggle_service = "/" + gello_node_name_ + "/toggle_gello";
@@ -129,12 +128,37 @@ private:
         RCLCPP_INFO_STREAM(node_->get_logger(), "Found parameter - " << param_name << ": " << output_value);
     }
 
+    void switchServoCommandType(int8_t type)
+    {
+        if (!switch_cmd_type_client_ || !switch_cmd_type_client_->service_is_ready()) {
+            RCLCPP_WARN(node_->get_logger(), "switch_command_type service not ready");
+            return;
+        }
+        auto req = std::make_shared<moveit_msgs::srv::ServoCommandType::Request>();
+        req->command_type = type;
+        switch_cmd_type_client_->async_send_request(req,
+            [this, type](rclcpp::Client<moveit_msgs::srv::ServoCommandType>::SharedFuture fut) {
+                auto res = fut.get();
+                if (!res->success)
+                    RCLCPP_WARN(node_->get_logger(), "switch_command_type(%d) failed: %s",
+                                type, res->message.c_str());
+            });
+    }
+
     void toggleGelloPause()
     {
         if (!gello_toggle_client_->service_is_ready()) {
             RCLCPP_WARN(node_->get_logger(), "Gello toggle service not available");
             return;
         }
+
+        // Capture current state: if gello is NOT paused, we're about to pause it (enter keyboard mode)
+        bool entering_keyboard_mode = !gello_paused_;
+        if (entering_keyboard_mode) {
+            // Switch Servo to TWIST before publishing twist commands (TWIST=1)
+            switchServoCommandType(moveit_msgs::srv::ServoCommandType::Request::TWIST);
+        }
+        // Gello node handles switch back to JOINT_JOG when it receives the unpause
 
         auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
         auto future = gello_toggle_client_->async_send_request(request,
@@ -279,7 +303,7 @@ public:
 
 private:
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr twist_pub_;
-    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_client_;
+    rclcpp::Client<moveit_msgs::srv::ServoCommandType>::SharedPtr switch_cmd_type_client_;
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr gello_toggle_client_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gello_paused_sub_;
     rclcpp::Node::SharedPtr node_;
